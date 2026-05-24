@@ -5,7 +5,23 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
+
+type accountUsageWindowStatsRepo struct {
+	UsageLogRepository
+	statsByStart map[int64]*usagestats.AccountStats
+	calls        []time.Time
+}
+
+func (r *accountUsageWindowStatsRepo) GetAccountWindowStats(_ context.Context, _ int64, startTime time.Time) (*usagestats.AccountStats, error) {
+	r.calls = append(r.calls, startTime)
+	if stats, ok := r.statsByStart[startTime.UnixNano()]; ok {
+		return stats, nil
+	}
+	return &usagestats.AccountStats{}, nil
+}
 
 type accountUsageCodexProbeRepo struct {
 	stubOpenAIAccountRepo
@@ -63,6 +79,50 @@ func TestShouldRefreshOpenAICodexSnapshot(t *testing.T) {
 		},
 	}, usage, now) {
 		t.Fatal("expected stale ws snapshot to trigger refresh")
+	}
+}
+
+func TestAccountUsageService_AddWindowStatsAttachesAnthropicSevenDay(t *testing.T) {
+	now := time.Now().UTC()
+	fiveHourStart := now.Add(-2 * time.Hour).Truncate(time.Second)
+	fiveHourEnd := now.Add(3 * time.Hour).Truncate(time.Second)
+	sevenDayReset := now.Add(48 * time.Hour).Truncate(time.Second)
+	sevenDayStart := sevenDayReset.Add(-7 * 24 * time.Hour)
+
+	repo := &accountUsageWindowStatsRepo{statsByStart: map[int64]*usagestats.AccountStats{
+		fiveHourStart.UnixNano(): {
+			Requests:     5,
+			Tokens:       50,
+			StandardCost: 0.5,
+		},
+		sevenDayStart.UnixNano(): {
+			Requests:     70,
+			Tokens:       700,
+			StandardCost: 7,
+		},
+	}}
+	svc := &AccountUsageService{usageLogRepo: repo, cache: NewUsageCache()}
+	usage := &UsageInfo{
+		FiveHour: &UsageProgress{Utilization: 10},
+		SevenDay: &UsageProgress{Utilization: 20, ResetsAt: &sevenDayReset},
+	}
+	account := &Account{ID: 42, SessionWindowStart: &fiveHourStart, SessionWindowEnd: &fiveHourEnd}
+
+	svc.addWindowStats(context.Background(), account, usage)
+
+	if usage.FiveHour.WindowStats == nil || usage.FiveHour.WindowStats.Requests != 5 {
+		t.Fatalf("FiveHour.WindowStats = %#v, want requests=5", usage.FiveHour.WindowStats)
+	}
+	if usage.SevenDay.WindowStats == nil || usage.SevenDay.WindowStats.Requests != 70 {
+		t.Fatalf("SevenDay.WindowStats = %#v, want requests=70", usage.SevenDay.WindowStats)
+	}
+	if len(repo.calls) != 2 {
+		t.Fatalf("GetAccountWindowStats calls = %d, want 2", len(repo.calls))
+	}
+
+	svc.addWindowStats(context.Background(), account, usage)
+	if len(repo.calls) != 2 {
+		t.Fatalf("GetAccountWindowStats calls after cache hit = %d, want 2", len(repo.calls))
 	}
 }
 
@@ -204,6 +264,56 @@ func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {
 		}
 		if progress.Utilization != 0 {
 			t.Fatalf("expected Utilization=0 for expired 7d window, got %v", progress.Utilization)
+		}
+	})
+}
+
+func TestCodexWindowStart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
+
+	t.Run("uses reset minus 5h window length", func(t *testing.T) {
+		extra := map[string]any{
+			"codex_5h_reset_at":       "2026-03-16T15:30:00Z",
+			"codex_5h_window_minutes": 300,
+		}
+		got := codexWindowStart(extra, "5h", now)
+		want := time.Date(2026, 3, 16, 10, 30, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("codexWindowStart() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("uses reset minus 7d window length", func(t *testing.T) {
+		extra := map[string]any{
+			"codex_7d_reset_at":       "2026-03-20T00:00:00Z",
+			"codex_7d_window_minutes": 10080,
+		}
+		got := codexWindowStart(extra, "7d", now)
+		want := time.Date(2026, 3, 13, 0, 0, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("codexWindowStart() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("falls back to rolling window when metadata is missing", func(t *testing.T) {
+		got := codexWindowStart(map[string]any{}, "5h", now)
+		want := now.Add(-5 * time.Hour)
+		if !got.Equal(want) {
+			t.Fatalf("codexWindowStart() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("falls back to rolling window when reset is expired", func(t *testing.T) {
+		extra := map[string]any{
+			"codex_5h_reset_at":       "2026-03-16T10:00:00Z",
+			"codex_5h_window_minutes": 300,
+		}
+		got := codexWindowStart(extra, "5h", now)
+		want := now.Add(-5 * time.Hour)
+		if !got.Equal(want) {
+			t.Fatalf("codexWindowStart() = %v, want %v", got, want)
 		}
 	})
 }
