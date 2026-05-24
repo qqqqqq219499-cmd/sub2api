@@ -41,9 +41,9 @@ const (
 	// defaultIdleConnTimeout: 默认空闲连接超时时间（90秒）
 	// 超时后连接会被关闭，释放系统资源（建议小于上游 LB 超时）
 	defaultIdleConnTimeout = 90 * time.Second
-	// defaultResponseHeaderTimeout: 默认等待响应头超时时间（5分钟）
-	// LLM 请求可能排队较久，需要较长超时
-	defaultResponseHeaderTimeout = 300 * time.Second
+	// defaultResponseHeaderTimeout: 默认等待响应头超时时间（30秒）
+	// 超时后应尽快让上层触发 failover，而不是长时间挂起。
+	defaultResponseHeaderTimeout = 30 * time.Second
 	// defaultMaxUpstreamClients: 默认最大客户端缓存数量
 	// 超出后会淘汰最久未使用的客户端
 	defaultMaxUpstreamClients = 5000

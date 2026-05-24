@@ -145,6 +145,52 @@ func TestOpenAIGatewayService_OAuthMessagesBridgeDoesNotInjectDefaultInstruction
 	require.Empty(t, upstream.lastReq.Header.Get("originator"))
 }
 
+func TestOpenAIGatewayService_OpenAIPassthroughTimeoutReturnsFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	originalBody := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"passthrough-test","input":"hi"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(originalBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{err: context.DeadlineExceeded}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				ResponseHeaderTimeout: 20,
+			},
+		},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          123,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Extra: map[string]any{
+			"openai_passthrough_enabled": true,
+		},
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.Error(t, err)
+	require.Nil(t, result)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), context.DeadlineExceeded.Error())
+	require.False(t, rec.Code >= http.StatusBadRequest, "透传模式超时也应先返回 failover 错误，由 handler 决定切号")
+}
+
 type openAIPassthroughFailoverRepo struct {
 	stubOpenAIAccountRepo
 	rateLimitCalls []time.Time

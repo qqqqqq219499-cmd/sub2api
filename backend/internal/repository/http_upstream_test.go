@@ -41,13 +41,13 @@ func (s *HTTPUpstreamSuite) newService() *httpUpstreamService {
 }
 
 // TestDefaultResponseHeaderTimeout 测试默认响应头超时配置
-// 验证未配置时使用 300 秒默认值
+// 验证未配置时使用 30 秒默认值
 func (s *HTTPUpstreamSuite) TestDefaultResponseHeaderTimeout() {
 	svc := s.newService()
 	entry := mustGetOrCreateClient(s.T(), svc, "", 0, 0)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
-	require.Equal(s.T(), 300*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
+	require.Equal(s.T(), 30*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
 }
 
 // TestCustomResponseHeaderTimeout 测试自定义响应头超时配置

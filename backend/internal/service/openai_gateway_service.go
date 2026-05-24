@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -2796,6 +2797,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
+			if isOpenAIUpstreamTimeoutError(err) {
+				return nil, s.newOpenAIRequestTimeoutFailoverError(c, account, false, err)
+			}
 			c.JSON(http.StatusBadGateway, gin.H{
 				"error": gin.H{
 					"type":    "upstream_error",
@@ -3097,6 +3101,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
+		if isOpenAIUpstreamTimeoutError(err) {
+			return nil, s.newOpenAIRequestTimeoutFailoverError(c, account, true, err)
+		}
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{
 				"type":    "upstream_error",
@@ -3581,6 +3588,37 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: body,
 	}
+}
+
+func isOpenAIUpstreamTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr != nil && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "timeout awaiting response headers")
+}
+
+func (s *OpenAIGatewayService) newOpenAIRequestTimeoutFailoverError(
+	c *gin.Context,
+	account *Account,
+	passthrough bool,
+	err error,
+) *UpstreamFailoverError {
+	message := "OpenAI upstream response header timeout"
+	if err != nil {
+		safeErr := sanitizeUpstreamErrorMessage(strings.TrimSpace(err.Error()))
+		if safeErr != "" {
+			message = safeErr
+		}
+	}
+	return s.newOpenAIStreamFailoverError(c, account, passthrough, "", nil, message)
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
