@@ -16,6 +16,7 @@ This directory contains files for deploying Sub2API on Linux servers.
 | `docker-compose.yml` | Docker Compose configuration (named volumes) |
 | `docker-compose.local.yml` | Docker Compose configuration (local directories, easy migration) |
 | `docker-deploy.sh` | **One-click Docker deployment script (recommended)** |
+| `deploy-ghcr-image.sh` | Pull a prebuilt GHCR image, switch only `sub2api`, health-check, and auto-rollback |
 | `.env.example` | Docker environment variables template |
 | `DOCKER.md` | Docker Hub documentation |
 | `install.sh` | One-click binary installation script |
@@ -28,6 +29,32 @@ This directory contains files for deploying Sub2API on Linux servers.
 ---
 
 ## Docker Deployment (Recommended)
+
+### Production update with GHCR image (recommended for custom builds)
+
+For production updates, prefer building the Docker image in GitHub Actions and
+letting the server only pull and switch images. This avoids compiling frontend
+assets on small production servers.
+
+1. Run the GitHub Actions workflow `Build Custom GHCR Image`.
+2. Copy or keep `deploy-ghcr-image.sh` on the server.
+3. Deploy the exact pushed image:
+
+```bash
+cd /opt/sub2api
+bash /path/to/deploy-ghcr-image.sh \
+  --image ghcr.io/<owner>/<repo>:v0.1.132-codex-1d890031 \
+  --expected-version 0.1.132 \
+  --expected-commit 1d890031
+```
+
+The script backs up `docker-compose.yml`, recreates only the `sub2api` service,
+waits for container health, checks `/health`, validates `/app/sub2api --version`,
+and rolls back to the previous compose file if a critical check fails.
+If Docker or compose files require elevated permissions, the script uses
+passwordless `sudo` automatically; otherwise run it as root.
+
+See `deploy/GHCR_DEPLOYMENT.md` for the full workflow.
 
 ### Method 1: One-Click Deployment (Recommended)
 

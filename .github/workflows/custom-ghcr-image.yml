@@ -1,0 +1,129 @@
+name: Build Custom GHCR Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Sub2API version for --build-arg VERSION, for example 0.1.132'
+        required: true
+        type: string
+      image_repository:
+        description: 'Optional GHCR repository path without ghcr.io, defaults to this repo'
+        required: false
+        type: string
+        default: ''
+      image_tag:
+        description: 'Optional explicit image tag, defaults to v<version>-codex-<short_sha>'
+        required: false
+        type: string
+        default: ''
+      run_tests:
+        description: 'Run backend tests before building'
+        required: false
+        type: boolean
+        default: true
+      push_latest_custom:
+        description: 'Also push codex-latest tag'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  backend-tests:
+    if: ${{ inputs.run_tests }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+      - name: Verify Go version
+        run: go version | grep -q 'go1.26.3'
+      - name: Run backend tests
+        working-directory: backend
+        run: go test -count=1 ./...
+
+  build-and-push:
+    needs: backend-tests
+    if: ${{ always() && (needs.backend-tests.result == 'success' || needs.backend-tests.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+      full_image: ${{ steps.meta.outputs.full_image }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${{ inputs.image_repository }}"
+          if [ -z "$repo" ]; then
+            repo="${{ github.repository }}"
+          fi
+          repo="$(echo "$repo" | tr '[:upper:]' '[:lower:]')"
+          tag="${{ inputs.image_tag }}"
+          short_sha="${GITHUB_SHA::8}"
+          if [ -z "$tag" ]; then
+            tag="v${{ inputs.version }}-codex-${short_sha}"
+          fi
+          image="ghcr.io/${repo}"
+          tags="${image}:${tag}"
+          if [ "${{ inputs.push_latest_custom }}" = "true" ]; then
+            tags="${tags}"$'\n'"${image}:codex-latest"
+          fi
+          {
+            echo "image=${image}"
+            echo "tag=${tag}"
+            echo "full_image=${image}:${tag}"
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${image}:${tag}"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ inputs.version }}
+            COMMIT=${{ github.sha }}
+            FRONTEND_NODE_OPTIONS=--max-old-space-size=2048
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deployment command
+        run: |
+          cat <<'EOF'
+          Image pushed:
+            ${{ steps.meta.outputs.full_image }}
+
+          Deploy on the server:
+            bash deploy/deploy-ghcr-image.sh \
+              --image '${{ steps.meta.outputs.full_image }}' \
+              --expected-version '${{ inputs.version }}' \
+              --expected-commit '${{ github.sha }}'
+          EOF

@@ -71,3 +71,39 @@
 - [x] 服务器构建目录：`/home/ubuntu/sub2api-builds/20260527232514-v132-codex-patches`。
 - [x] `/opt/sub2api/docker-compose.yml` 备份：`/opt/sub2api/docker-compose.yml.bak.20260527234156`。
 - [x] 仅重建 `sub2api` 服务；上线后容器 `healthy`，版本输出 `Sub2API 0.1.132 (commit: ef545d6e, built: 2026-05-27T15:30:57Z)`，本地 `/health` 返回 `{"status":"ok"}`，public settings 返回 `version=0.1.132`。
+
+---
+
+## GHCR 安全发布方案
+
+目标：后续不要再在 2G 生产服务器上本地构建镜像；改为 GitHub Actions 构建并推送 GHCR，服务器只拉取指定镜像、切换 `sub2api` 服务、健康检查，失败自动回滚。
+
+### 计划
+
+- [x] 新增 GitHub Actions workflow：`.github/workflows/custom-ghcr-image.yml`。
+- [x] workflow 支持手动输入 `version`、可选 `image_repository`、可选 `image_tag`，默认生成 `v<version>-codex-<short_sha>`。
+- [x] workflow 默认先跑 `go test -count=1 ./...`，通过后再构建并推送 GHCR 镜像。
+- [x] Dockerfile 增加 `FRONTEND_NODE_OPTIONS` build arg，默认 `--max-old-space-size=2048`，避免前端构建 OOM 需要临时改 Dockerfile。
+- [x] 新增服务器部署脚本：`deploy/deploy-ghcr-image.sh`。
+- [x] 部署脚本只替换 compose 中 `sub2api` 服务的镜像，只重建 `sub2api`，不重建 Postgres/Redis/Caddy。
+- [x] 部署脚本支持健康检查、版本/commit 校验、失败恢复 compose 备份并回滚旧镜像。
+- [x] 文档：`deploy/GHCR_DEPLOYMENT.md` 和 `deploy/README.md`。
+
+### 后续发布命令
+
+GitHub Actions 构建成功后，在服务器执行：
+
+```bash
+cd /opt/sub2api
+bash /path/to/deploy-ghcr-image.sh \
+  --image ghcr.io/<owner>/<repo>:v0.1.132-codex-1d890031 \
+  --expected-version 0.1.132 \
+  --expected-commit 1d890031
+```
+
+### 验证
+
+- [x] `D:\Program Files\Git\bin\bash.exe -n deploy/deploy-ghcr-image.sh`
+- [x] Python/PyYAML 解析 `.github/workflows/custom-ghcr-image.yml`
+- [x] `git diff --check`
+- [x] `go test -count=1 ./...`
