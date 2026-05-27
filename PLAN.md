@@ -234,3 +234,145 @@ CC Switch 的供应商配置应使用：
 - `go test ./internal/service -run 'TestOpenAIStreaming(ReadErrorBeforeOutputReturnsFailover|ResponseFailedBeforeOutputReturnsFailover|ResponseFailedBeforeOutputCapacityErrorReturnsFailover)' -count=1` 通过。
 - `go test ./internal/service -run 'TestOpenAIGatewayService_(ResponsesUnknownModelDoesNotFallbackToGPT54|OAuthMessagesBridgeDoesNotInjectDefaultInstructions|ForwardUpstreamTimeoutReturnsFailover|OpenAIPassthroughTimeoutReturnsFailover)' -count=1` 通过。
 - `go test ./internal/repository -run 'TestHTTPUpstreamSuite/(TestDefaultResponseHeaderTimeout|TestCustomResponseHeaderTimeout)' -count=1` 通过。
+
+## 15. 上线后继续复查（2026-05-25）
+
+### 最近 1 小时 `/v1/responses` 成功请求概览
+
+- 成功请求数：`237`
+- 错误请求数：`10`
+- 当前错误率约 `4.05%`，但这 10 条都不是上游账号执行失败，而是入口 `400 invalid_request_error`
+- 成功请求按模型看，`gpt-5.5` 仍是绝对主流：`231/237`
+- `gpt-5.5` 仍按配置映射到上游 `gpt-5.4`，`model_mapping_chain = gpt-5.5→gpt-5.4`
+
+### 最近 1 小时性能分布
+
+- 全体 `/v1/responses`：
+  - `avg_ms ≈ 17.8s`
+  - `p95_ms ≈ 48.3s`
+  - `max_ms = 158.5s`
+- `gpt-5.5 → gpt-5.4`：
+  - `n = 231`
+  - `avg_first_token_ms ≈ 2.4s`
+  - `avg_ms ≈ 17.8s`
+  - `p95_ms ≈ 48.3s`
+- 结论：当前主要慢在“整段生成时长”，不是“首包完全不出”的老问题；首 Token 偏高但还不是最大矛盾。
+
+### 按账号分布
+
+- `account_id=1`（`Codex OAuth #1`）最慢：
+  - `n = 77`
+  - `avg_ms = 25.99s`
+  - `p95_ms = 67.99s`
+  - `max_ms = 158.54s`
+  - `avg_first_token_ms = 2.07s`
+  - `avg_input_tokens = 19003`
+  - `p95_input_tokens = 101839`
+- 其他账号：
+  - `account_id=4`: `avg_ms = 14.51s`, `p95_ms = 26.83s`
+  - `account_id=3`: `avg_ms = 11.24s`, `p95_ms = 24.43s`
+  - `account_id=2`: `avg_ms = 6.77s`, `p95_ms = 11.54s`
+- 结论：当前不是 4 个号一样慢，而是 `#1` 明显更拖后腿。
+
+### 最慢请求特征
+
+- 最近最慢 Top 请求几乎都为 `gpt-5.5 → gpt-5.4`
+- 最慢样本显示：
+  - `duration_ms = 158535`, `input_tokens = 1416`, `output_tokens = 8690`
+  - `duration_ms = 102208`, `input_tokens = 50195`, `output_tokens = 3532`
+  - `duration_ms = 67987`, `input_tokens = 241564`, `output_tokens = 3490`
+- 同一批请求前缀高度集中在两个长会话：
+  - `generated:r31cxkc3ch649c`
+  - `generated:r2jmnnx7em1hg5`
+- 其中 `generated:r31cxkc3ch649c` 在 `account_id=1` 上 1 小时内就打了 `71` 次，`avg_input_tokens = 19153`，`avg_ms = 25.77s`，`max_ms = 158.54s`
+- 结论：现在红面板更像是“长会话上下文滚得过大 + 输出偏长”把时延拉爆，而不是之前那种 600 秒假死不切号。
+
+### 最近 1 小时错误来源
+
+- `ops_error_logs` 最近 1 小时 `/v1/responses` 共 `10` 条
+- 全部为：
+  - `error_type = invalid_request_error`
+  - `status_code = 400`
+  - `error_message = Failed to read request body`
+- 这些错误记录没有 `account_id`，说明请求在进入账号调度前就失败了，不是 OAuth 账号、模型映射或上游 ChatGPT 响应头超时导致
+- 结论：当前面板里的错误率，有一部分是客户端请求体自己坏掉或中途断流造成的，不该甩锅给账号池
+
+### 当前阶段结论
+
+1. “会话像死掉一样不动、不切号”的 600 秒级问题，本轮上线后暂未复现；近 30 分钟未再看到新的 `timeout awaiting response headers`
+2. 当前面板仍然发红，主因不是切号失效，而是：
+   - `gpt-5.5 → gpt-5.4` 本身生成较慢
+   - 个别长会话把 `input_tokens` 滚到很大，拖高总时长
+   - `Codex OAuth #1` 当前明显慢于其他 3 个账号
+   - 另有少量客户端侧 `Failed to read request body` 400 错误抬高错误率
+3. 也就是说，核心矛盾已经从“假死”切换成了“长上下文长输出导致慢，以及单账号体质差异”
+
+### 下一步建议
+
+1. 先观察 `Codex OAuth #1`
+   - 若后续 30-60 分钟仍持续慢于其他号，优先将其并发从 `2` 临时降回 `1`，甚至短时摘除观察
+2. 对超长会话做行为约束
+   - 当同一会话 `input_tokens` 长期滚到 `5w~20w+` 时，P95 会被明显拉高
+   - 使用侧应定期新开会话，别把一个线程抡成化石还指望它飞
+3. 继续盯 `Failed to read request body`
+   - 这不是上游账号锅，更像客户端断流、请求体格式异常或代理链路中断
+   - 若面板要更干净，需要从调用端排查这一类 400
+4. 若后续仍觉得整体慢
+   - 可以继续评估是否调整 `gpt-5.5` 的映射策略，或增加更多账号分摊长会话
+   - 但这属于“整体吞吐和体验优化”，不再是前面那个“卡死不切号”的根因问题
+
+## 16. sticky 最近偏向 `Codex OAuth #4` 的补充分析（2026-05-25）
+
+### 代码侧确认
+
+- 当前线上配置记录为 `openai_advanced_scheduler_enabled=false`，因此线上并没有走 `backend/internal/service/openai_account_scheduler.go` 里的新高级调度器 top-k 加权选择。
+- 现网实际走的是 `backend/internal/service/openai_gateway_service.go` 里的旧 `selectAccountWithLoadAwareness(...)` 路径：
+  1. 先命中 `session_hash` sticky
+  2. 命不中再按 `Priority -> LoadRate -> LastUsedAt` 选账号
+  3. 只有在这些排序键完全相同的一组账号内，才会做组内随机打散
+- `session_hash` 在 OpenAI/Codex 路径优先取显式会话信号，而不是优先取消息内容：
+  1. `session_id`
+  2. `conversation_id`
+  3. `prompt_cache_key`
+  4. 上述都没有时，才退化到内容派生 seed
+- 这意味着：如果 Codex/兼容桥持续复用同一个 `session_id` / `prompt_cache_key` / metadata `session_id`，它天然就会长期粘在第一次分到的那个账号上。
+
+### 对“为什么最近都落在 #4”的判断
+
+1. 这更像 sticky 的正常表现，不像调度异常
+   - 一旦某个窗口/线程第一次落到 `Codex OAuth #4`，后续同会话会持续复用该绑定
+   - sticky TTL 默认 1 小时，期间请求还会刷新 TTL，所以活跃长会话会一直挂在同一账号上
+2. 这也不是“高级调度器偏爱 #4”
+   - 高级调度器当前根本没启用，别把锅乱扣，容易把人带沟里
+3. 更可能的真实原因有两个：
+   - 最近样本本来就主要来自少量长期活跃的 Codex 窗口/线程，它们首绑时恰好落到了 `#4`
+   - 在这些会话首绑当时，`#4` 的 `LoadRate / LastUsedAt` 更占优，于是旧路径优先把新 sticky 绑定到了它
+
+### 为什么暂时不建议因为这个现象改策略
+
+- 最新巡检结论里，慢号是 `Codex OAuth #1`，不是 `#4`
+  - `#4` 当前 `avg_ms ≈ 14.51s`
+  - `#1` 当前 `avg_ms ≈ 25.99s`
+- 也就是说，sticky 偏到 `#4``目前看不是坏事`，至少没有证据表明它把系统拖慢了
+- 如果现在为了“看起来平均”去主动打散 sticky，会带来几个副作用：
+  - 长会话连续性变差
+  - Codex/兼容桥的会话延续命中率下降
+  - 更容易重新踩到“粘性账号忙时等待”或跨号续链不稳这类老坑
+
+### 当前建议
+
+1. 先不调整 sticky 策略
+   - 现阶段没有证据表明“最近偏到 #4”本身是故障
+2. 继续观察是否出现下面任一情况
+   - `#4` 的 `avg_ms / p95 / waiting` 持续明显劣化
+   - 新开的多个独立会话也持续异常集中到 `#4`
+   - `#4` 成为新的队列热点，而其他号持续空闲
+3. 若后续真要做“更均匀分散新 sticky”的优化，优先级应是：
+   - 先上线自定义构建，带上 `232bd7b7 fix openai sticky fallback scheduling`
+   - 再评估开启高级调度器，或缩短 sticky TTL / 调整新会话首绑策略
+   - 不建议在当前官方镜像 + 现有 legacy 路径上直接硬改
+
+### 本轮结论
+
+- “sticky 最近都落在 `Codex OAuth #4`”目前更像是`长会话 sticky 绑定延续 + 首绑时 #4 状态较优`的结果。
+- 结合最新巡检数据，当前不需要因为这个现象单独调整策略；真正该盯的仍然是 `#1` 偏慢、长上下文过大，以及客户端 `400 Failed to read request body`。
