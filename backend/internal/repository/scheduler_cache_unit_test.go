@@ -4,6 +4,7 @@ package repository
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -33,6 +34,38 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 	require.Equal(t, "force_chat_completions", got.Extra["openai_responses_mode"])
 	require.Equal(t, false, got.Extra["openai_responses_supported"])
 	require.Equal(t, true, got.Extra["mixed_scheduling"])
+	require.Nil(t, got.Extra["unused_large_field"])
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsOpenAICodexSchedulingExtra(t *testing.T) {
+	createdAt := time.Date(2026, 5, 20, 8, 30, 0, 0, time.UTC)
+	account := service.Account{
+		ID:        42,
+		Platform:  service.PlatformOpenAI,
+		Type:      service.AccountTypeOAuth,
+		CreatedAt: createdAt,
+		Extra: map[string]any{
+			"codex_usage_updated_at":       "2026-05-28T02:50:40+08:00",
+			"codex_7d_used_percent":        41.0,
+			"codex_7d_reset_at":            "2026-06-01T05:27:48+08:00",
+			"codex_7d_reset_after_seconds": 355129,
+			"codex_5h_used_percent":        24.0,
+			"codex_5h_reset_at":            "2026-05-28T07:50:40+08:00",
+			"codex_5h_reset_after_seconds": 18200,
+			"unused_large_field":           "drop-me",
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, createdAt, got.CreatedAt)
+	require.Equal(t, "2026-05-28T02:50:40+08:00", got.Extra["codex_usage_updated_at"])
+	require.Equal(t, 41.0, got.Extra["codex_7d_used_percent"])
+	require.Equal(t, "2026-06-01T05:27:48+08:00", got.Extra["codex_7d_reset_at"])
+	require.Equal(t, 355129, got.Extra["codex_7d_reset_after_seconds"])
+	require.Equal(t, 24.0, got.Extra["codex_5h_used_percent"])
+	require.Equal(t, "2026-05-28T07:50:40+08:00", got.Extra["codex_5h_reset_at"])
+	require.Equal(t, 18200, got.Extra["codex_5h_reset_after_seconds"])
 	require.Nil(t, got.Extra["unused_large_field"])
 }
 

@@ -1770,8 +1770,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				// 排序：优先级 > 负载率 > 最后使用时间
 				sort.SliceStable(routingAvailable, func(i, j int) bool {
 					a, b := routingAvailable[i], routingAvailable[j]
-					if a.account.Priority != b.account.Priority {
-						return a.account.Priority < b.account.Priority
+					if priorityCmp := compareSchedulerAccountPriority(a.account, b.account); priorityCmp != 0 {
+						return priorityCmp < 0
+					}
+					now := time.Now()
+					if a7d, b7d := a.account.OpenAICodex7dUsedPercentForScheduling(now), b.account.OpenAICodex7dUsedPercentForScheduling(now); a7d != b7d {
+						return a7d > b7d
+					}
+					if createdCmp := compareSchedulerAccountCreatedAt(a.account, b.account); createdCmp != 0 {
+						return createdCmp < 0
 					}
 					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
@@ -2809,6 +2816,43 @@ func filterByMaxOpenAICodex7dUsage(accounts []accountWithLoad, now time.Time) []
 	return result
 }
 
+func compareSchedulerAccountPriority(a, b *Account) int {
+	if a.Priority == b.Priority {
+		return 0
+	}
+	aProtected := a.Priority == 99
+	bProtected := b.Priority == 99
+	switch {
+	case aProtected && !bProtected:
+		return 1
+	case !aProtected && bProtected:
+		return -1
+	case a.Priority < b.Priority:
+		return -1
+	default:
+		return 1
+	}
+}
+
+func compareSchedulerAccountCreatedAt(a, b *Account) int {
+	aZero := a.CreatedAt.IsZero()
+	bZero := b.CreatedAt.IsZero()
+	switch {
+	case aZero && bZero:
+		return 0
+	case aZero:
+		return 1
+	case bZero:
+		return -1
+	case a.CreatedAt.Before(b.CreatedAt):
+		return -1
+	case b.CreatedAt.Before(a.CreatedAt):
+		return 1
+	default:
+		return 0
+	}
+}
+
 // selectByLRU 从集合中选择最久未用的账号
 // 如果有多个账号具有相同的最小 LastUsedAt，则随机选择一个
 func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
@@ -2873,11 +2917,14 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 	now := time.Now()
 	sort.SliceStable(accounts, func(i, j int) bool {
 		a, b := accounts[i], accounts[j]
-		if a.Priority != b.Priority {
-			return a.Priority < b.Priority
+		if priorityCmp := compareSchedulerAccountPriority(a, b); priorityCmp != 0 {
+			return priorityCmp < 0
 		}
 		if a7d, b7d := a.OpenAICodex7dUsedPercentForScheduling(now), b.OpenAICodex7dUsedPercentForScheduling(now); a7d != b7d {
 			return a7d > b7d
+		}
+		if createdCmp := compareSchedulerAccountCreatedAt(a, b); createdCmp != 0 {
+			return createdCmp < 0
 		}
 		switch {
 		case a.LastUsedAt == nil && b.LastUsedAt != nil:
@@ -2919,7 +2966,7 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
 
 // sameAccountWithLoadGroup 判断两个 accountWithLoad 是否属于同一排序组
 func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
-	if a.account.Priority != b.account.Priority {
+	if compareSchedulerAccountPriority(a.account, b.account) != 0 {
 		return false
 	}
 	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
@@ -2927,6 +2974,9 @@ func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
 	}
 	now := time.Now()
 	if a.account.OpenAICodex7dUsedPercentForScheduling(now) != b.account.OpenAICodex7dUsedPercentForScheduling(now) {
+		return false
+	}
+	if compareSchedulerAccountCreatedAt(a.account, b.account) != 0 {
 		return false
 	}
 	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)
@@ -2979,11 +3029,14 @@ func shuffleWithinPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 
 // sameAccountGroup 判断两个 Account 是否属于同一排序组（Priority + Codex 7d 用量 + LastUsedAt）
 func sameAccountGroup(a, b *Account) bool {
-	if a.Priority != b.Priority {
+	if compareSchedulerAccountPriority(a, b) != 0 {
 		return false
 	}
 	now := time.Now()
 	if a.OpenAICodex7dUsedPercentForScheduling(now) != b.OpenAICodex7dUsedPercentForScheduling(now) {
+		return false
+	}
+	if compareSchedulerAccountCreatedAt(a, b) != 0 {
 		return false
 	}
 	return sameLastUsedAt(a.LastUsedAt, b.LastUsedAt)
@@ -3018,8 +3071,8 @@ func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOA
 func sortAccountsByPriorityOnly(accounts []*Account, preferOAuth bool) {
 	sort.SliceStable(accounts, func(i, j int) bool {
 		a, b := accounts[i], accounts[j]
-		if a.Priority != b.Priority {
-			return a.Priority < b.Priority
+		if priorityCmp := compareSchedulerAccountPriority(a, b); priorityCmp != 0 {
+			return priorityCmp < 0
 		}
 		if preferOAuth && a.Type != b.Type {
 			return a.Type == AccountTypeOAuth

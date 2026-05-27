@@ -545,6 +545,34 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	return usage, nil
 }
 
+func (s *AccountUsageService) RefreshOpenAICodexSnapshot(ctx context.Context, account *Account) {
+	if s == nil || account == nil || !account.IsOpenAIOAuth() {
+		return
+	}
+
+	now := time.Now()
+	usage := &UsageInfo{UpdatedAt: &now}
+	if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
+		usage.FiveHour = progress
+	}
+	if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
+		usage.SevenDay = progress
+	}
+
+	if !shouldRefreshOpenAICodexSnapshot(account, usage, now) || !s.shouldProbeOpenAICodexSnapshot(account.ID, now, false) {
+		return
+	}
+
+	if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
+		mergeAccountExtra(account, updates)
+	} else if err != nil {
+		slog.Debug("openai.codex_background_probe_failed",
+			"account_id", account.ID,
+			"error", err,
+		)
+	}
+}
+
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {
 	if account == nil {
 		return false

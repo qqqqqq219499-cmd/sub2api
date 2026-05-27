@@ -436,15 +436,18 @@ func (h *openAIAccountCandidateHeap) Pop() any {
 }
 
 func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
-	if left.score != right.score {
-		return left.score > right.score
-	}
-	if left.account.Priority != right.account.Priority {
-		return left.account.Priority < right.account.Priority
+	if priorityCmp := compareSchedulerAccountPriority(left.account, right.account); priorityCmp != 0 {
+		return priorityCmp < 0
 	}
 	now := time.Now()
 	if left7d, right7d := left.account.OpenAICodex7dUsedPercentForScheduling(now), right.account.OpenAICodex7dUsedPercentForScheduling(now); left7d != right7d {
 		return left7d > right7d
+	}
+	if createdCmp := compareSchedulerAccountCreatedAt(left.account, right.account); createdCmp != 0 {
+		return createdCmp < 0
+	}
+	if left.score != right.score {
+		return left.score > right.score
 	}
 	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
 		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
@@ -764,12 +767,15 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
-		if a.account.Priority != b.account.Priority {
-			return a.account.Priority < b.account.Priority
+		if priorityCmp := compareSchedulerAccountPriority(a.account, b.account); priorityCmp != 0 {
+			return priorityCmp < 0
 		}
 		now := time.Now()
 		if a7d, b7d := a.account.OpenAICodex7dUsedPercentForScheduling(now), b.account.OpenAICodex7dUsedPercentForScheduling(now); a7d != b7d {
 			return a7d > b7d
+		}
+		if createdCmp := compareSchedulerAccountCreatedAt(a.account, b.account); createdCmp != 0 {
+			return createdCmp < 0
 		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate

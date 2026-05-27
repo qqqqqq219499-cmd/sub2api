@@ -440,6 +440,7 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		LastUsedAt:              account.LastUsedAt,
 		ExpiresAt:               account.ExpiresAt,
 		AutoPauseOnExpired:      account.AutoPauseOnExpired,
+		CreatedAt:               account.CreatedAt,
 		Schedulable:             account.Schedulable,
 		RateLimitedAt:           account.RateLimitedAt,
 		RateLimitResetAt:        account.RateLimitResetAt,
@@ -548,6 +549,13 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_ws_force_http",
 		"openai_responses_mode",
 		"openai_responses_supported",
+		"codex_usage_updated_at",
+		"codex_5h_used_percent",
+		"codex_5h_reset_at",
+		"codex_5h_reset_after_seconds",
+		"codex_7d_used_percent",
+		"codex_7d_reset_at",
+		"codex_7d_reset_after_seconds",
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {

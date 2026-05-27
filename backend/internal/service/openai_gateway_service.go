@@ -1740,12 +1740,15 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 		sort.SliceStable(available, func(i, j int) bool {
 			a, b := available[i], available[j]
-			if a.account.Priority != b.account.Priority {
-				return a.account.Priority < b.account.Priority
+			if priorityCmp := compareSchedulerAccountPriority(a.account, b.account); priorityCmp != 0 {
+				return priorityCmp < 0
 			}
 			now := time.Now()
 			if a7d, b7d := a.account.OpenAICodex7dUsedPercentForScheduling(now), b.account.OpenAICodex7dUsedPercentForScheduling(now); a7d != b7d {
 				return a7d > b7d
+			}
+			if createdCmp := compareSchedulerAccountCreatedAt(a.account, b.account); createdCmp != 0 {
+				return createdCmp < 0
 			}
 			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 				return a.loadInfo.LoadRate < b.loadInfo.LoadRate

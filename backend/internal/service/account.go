@@ -2048,12 +2048,17 @@ func (a *Account) IsOpenAICodexWindowExhausted(now time.Time) bool {
 	if updatedAt.IsZero() || now.Sub(updatedAt) >= openAIProbeCacheTTL {
 		return false
 	}
-	return a.isOpenAICodexWindowExhausted("codex_5h", now, updatedAt) ||
-		a.isOpenAICodexWindowExhausted("codex_7d", now, updatedAt)
+	return a.isOpenAICodexWindowLimited("codex_5h", now, updatedAt, 95, false) ||
+		a.isOpenAICodexWindowLimited("codex_7d", now, updatedAt, 100, true)
 }
 
-func (a *Account) isOpenAICodexWindowExhausted(prefix string, now time.Time, updatedAt time.Time) bool {
-	if parseExtraFloat64(a.Extra[prefix+"_used_percent"]) < 100 {
+func (a *Account) isOpenAICodexWindowLimited(prefix string, now time.Time, updatedAt time.Time, threshold float64, inclusive bool) bool {
+	usedPercent := parseExtraFloat64(a.Extra[prefix+"_used_percent"])
+	if inclusive {
+		if usedPercent < threshold {
+			return false
+		}
+	} else if usedPercent <= threshold {
 		return false
 	}
 	resetAt := a.getExtraTime(prefix + "_reset_at")

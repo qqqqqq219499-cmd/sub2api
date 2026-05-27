@@ -105,6 +105,94 @@ func TestSortAccountsByPriorityAndLastUsed_SamePriorityPrefersHigherCodex7dUsage
 	require.Equal(t, int64(1), accounts[2].ID)
 }
 
+func TestSortAccountsByPriorityAndLastUsed_SamePriorityAndCodex7dUsesFIFO(t *testing.T) {
+	now := time.Now()
+	lastUsed := testTimePtr(now.Add(-1 * time.Hour))
+	oldestCreated := now.Add(-72 * time.Hour)
+	middleCreated := now.Add(-48 * time.Hour)
+	newestCreated := now.Add(-24 * time.Hour)
+	accounts := []*Account{
+		{
+			ID:         1,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   1,
+			LastUsedAt: lastUsed,
+			CreatedAt:  newestCreated,
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  80.0,
+			},
+		},
+		{
+			ID:         2,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   1,
+			LastUsedAt: lastUsed,
+			CreatedAt:  oldestCreated,
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  80.0,
+			},
+		},
+		{
+			ID:         3,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   1,
+			LastUsedAt: lastUsed,
+			CreatedAt:  middleCreated,
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  80.0,
+			},
+		},
+	}
+
+	sortAccountsByPriorityAndLastUsed(accounts, false)
+
+	require.Equal(t, int64(2), accounts[0].ID)
+	require.Equal(t, int64(3), accounts[1].ID)
+	require.Equal(t, int64(1), accounts[2].ID)
+}
+
+func TestSortAccountsByPriorityAndLastUsed_Priority99ProtectedAfterNormalAccounts(t *testing.T) {
+	now := time.Now()
+	lastUsed := testTimePtr(now.Add(-1 * time.Hour))
+	accounts := []*Account{
+		{
+			ID:         99,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   99,
+			LastUsedAt: lastUsed,
+			CreatedAt:  now.Add(-96 * time.Hour),
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  99.0,
+			},
+		},
+		{
+			ID:         1,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   1,
+			LastUsedAt: lastUsed,
+			CreatedAt:  now.Add(-24 * time.Hour),
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  10.0,
+			},
+		},
+	}
+
+	sortAccountsByPriorityAndLastUsed(accounts, false)
+
+	require.Equal(t, int64(1), accounts[0].ID)
+	require.Equal(t, int64(99), accounts[1].ID)
+}
+
 func TestSortAccountsByPriorityAndLastUsed_PreferOAuth(t *testing.T) {
 	accounts := []*Account{
 		{ID: 1, Priority: 1, LastUsedAt: nil, Type: AccountTypeAPIKey},

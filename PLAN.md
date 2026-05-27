@@ -114,3 +114,35 @@ bash /path/to/deploy-ghcr-image.sh \
 - [x] 未覆盖 fork 的 `main`，因为该分支仍在 `0.1.130-windowstats` 自定义线。
 - [x] 已推送安全分支：`codex/v132-ghcr-deploy`。
 - [x] PR 地址：`https://github.com/qqqqqq219499-cmd/sub2api/pull/new/codex/v132-ghcr-deploy`。
+
+---
+
+## 追加任务：OpenAI/Codex 调度与有限轮询
+
+### 目标
+
+修复调度缓存看不到 Codex 5h/7d 快照的问题，并调整 OpenAI/Codex 调度策略：
+
+- `priority=99` 作为保护/备用池，不参与普通调度优先规则。
+- 普通账号同 priority 下优先使用 7d 已用比例更高者；7d 相同再按创建时间 FIFO。
+- 额度已耗尽但没有运行时限流状态的账号，也要被调度排除。
+- Codex 5h 用量快照 `>95%` 时提前视为限流，避免打到临界账号。
+- 允许后台轮询 Codex 用量快照，但只轮询最近 24 小时内被调用过的普通 OpenAI OAuth 账号，且 `priority=99` 不参与。
+
+### 计划
+
+- [x] 补 scheduler metadata 回归测试，确认 `codex_*` 和 `created_at` 不被缓存瘦身过滤。
+- [x] 补普通排序、高级 scheduler、OpenAI 专用 load-aware 排序测试。
+- [x] 用 `priority=99` 替代写死账号 `1/2` 的保护池逻辑。
+- [x] 补 `5h=100%` 且 `rate_limit_reset_at` 为空时不可调度的测试。
+- [x] 补有限后台 Codex 快照轮询测试：24 小时内被调用过才轮询，`priority=99` 跳过。
+- [x] 实现有限后台 Codex 快照轮询。
+- [x] 补 Codex 5h `>95%` 提前限流测试，并保持 `95.0%` 边界可调度。
+- [x] 实现 Codex 5h `>95%` 提前限流。
+- [x] 跑相关 Go 测试与 `git diff --check`。
+
+### 风险
+
+- Codex 快照探测会请求 ChatGPT Codex backend；必须避免全量扫冷账号。
+- `last_used_at` 是延迟批量写入，刚被调用的账号可能要等一次 flush 后才进入后台轮询候选；请求路径返回头仍会即时更新快照。
+- 本轮只做本地修复与验证，不上线、不切镜像。

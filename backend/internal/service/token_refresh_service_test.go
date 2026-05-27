@@ -22,6 +22,7 @@ type tokenRefreshAccountRepo struct {
 	setTempUnschedCalls    int
 	lastAccount            *Account
 	updateErr              error
+	listActiveAccounts     []Account
 }
 
 func (r *tokenRefreshAccountRepo) Update(ctx context.Context, account *Account) error {
@@ -62,6 +63,24 @@ func (r *tokenRefreshAccountRepo) ClearTempUnschedulable(ctx context.Context, id
 func (r *tokenRefreshAccountRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.setTempUnschedCalls++
 	return nil
+}
+
+func (r *tokenRefreshAccountRepo) ListActive(ctx context.Context) ([]Account, error) {
+	if r.listActiveAccounts != nil {
+		return append([]Account(nil), r.listActiveAccounts...), nil
+	}
+	return r.mockAccountRepoForGemini.ListActive(ctx)
+}
+
+type tokenRefreshCodexProbeServiceStub struct {
+	calls []int64
+}
+
+func (s *tokenRefreshCodexProbeServiceStub) RefreshOpenAICodexSnapshot(ctx context.Context, account *Account) {
+	if account == nil {
+		return
+	}
+	s.calls = append(s.calls, account.ID)
 }
 
 type tokenCacheInvalidatorStub struct {
@@ -158,6 +177,90 @@ func TestTokenRefreshService_CanOptIntoOpenAIBackgroundRefresh(t *testing.T) {
 	}
 
 	require.True(t, found, "OpenAI OAuth background refresh should be available when explicitly enabled")
+}
+
+func TestTokenRefreshService_OpenAIBackgroundCodexProbeLimitedToRecentNormalAccounts(t *testing.T) {
+	now := time.Now()
+	recent := now.Add(-23 * time.Hour)
+	old := now.Add(-25 * time.Hour)
+	repo := &tokenRefreshAccountRepo{
+		listActiveAccounts: []Account{
+			{
+				ID:         101,
+				Platform:   PlatformOpenAI,
+				Type:       AccountTypeOAuth,
+				Status:     StatusActive,
+				Priority:   0,
+				LastUsedAt: &recent,
+				Credentials: map[string]any{
+					"access_token": "recent-token",
+					"expires_at":   now.Add(2 * time.Hour).UTC().Format(time.RFC3339),
+				},
+				Extra: map[string]any{
+					"openai_oauth_responses_websockets_v2_enabled": true,
+				},
+			},
+			{
+				ID:         102,
+				Platform:   PlatformOpenAI,
+				Type:       AccountTypeOAuth,
+				Status:     StatusActive,
+				Priority:   0,
+				LastUsedAt: &old,
+				Credentials: map[string]any{
+					"access_token": "old-token",
+					"expires_at":   now.Add(2 * time.Hour).UTC().Format(time.RFC3339),
+				},
+				Extra: map[string]any{
+					"openai_oauth_responses_websockets_v2_enabled": true,
+				},
+			},
+			{
+				ID:         103,
+				Platform:   PlatformOpenAI,
+				Type:       AccountTypeOAuth,
+				Status:     StatusActive,
+				Priority:   99,
+				LastUsedAt: &recent,
+				Credentials: map[string]any{
+					"access_token": "protected-token",
+					"expires_at":   now.Add(2 * time.Hour).UTC().Format(time.RFC3339),
+				},
+				Extra: map[string]any{
+					"openai_oauth_responses_websockets_v2_enabled": true,
+				},
+			},
+			{
+				ID:       104,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusActive,
+				Priority: 0,
+				Credentials: map[string]any{
+					"access_token": "never-used-token",
+					"expires_at":   now.Add(2 * time.Hour).UTC().Format(time.RFC3339),
+				},
+				Extra: map[string]any{
+					"openai_oauth_responses_websockets_v2_enabled": true,
+				},
+			},
+		},
+	}
+	probe := &tokenRefreshCodexProbeServiceStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			OpenAIBackgroundRefreshEnabled: true,
+			MaxRetries:                     1,
+			RetryBackoffSeconds:            0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	service.SetOpenAICodexUsageProbe(probe)
+
+	service.processRefresh()
+
+	require.Equal(t, []int64{101}, probe.calls)
+	require.Equal(t, 0, repo.updateCalls, "fresh OpenAI tokens should not be refreshed only to poll codex usage")
 }
 
 func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {

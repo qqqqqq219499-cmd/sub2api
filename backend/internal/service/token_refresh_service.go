@@ -15,6 +15,12 @@ import (
 // tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
 const tokenRefreshTempUnschedDuration = 10 * time.Minute
 
+const openAIBackgroundCodexProbeRecentWindow = 24 * time.Hour
+
+type OpenAICodexUsageProbe interface {
+	RefreshOpenAICodexSnapshot(ctx context.Context, account *Account)
+}
+
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
 type TokenRefreshService struct {
@@ -28,6 +34,7 @@ type TokenRefreshService struct {
 	tempUnschedCache TempUnschedCache // 用于清除 Redis 中的临时不可调度缓存
 	refreshAPI       *OAuthRefreshAPI // 统一刷新 API
 	runtimeBlocker   AccountRuntimeBlocker
+	codexUsageProbe  OpenAICodexUsageProbe
 
 	// OpenAI privacy: 刷新成功后检查并设置 training opt-out
 	privacyClientFactory PrivacyClientFactory
@@ -102,6 +109,10 @@ func (s *TokenRefreshService) SetRefreshAPI(api *OAuthRefreshAPI) {
 // SetRefreshPolicy 注入后台刷新调用侧策略（用于显式化平台/场景差异行为）。
 func (s *TokenRefreshService) SetRefreshPolicy(policy BackgroundRefreshPolicy) {
 	s.refreshPolicy = policy
+}
+
+func (s *TokenRefreshService) SetOpenAICodexUsageProbe(probe OpenAICodexUsageProbe) {
+	s.codexUsageProbe = probe
 }
 
 func (s *TokenRefreshService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
@@ -191,6 +202,8 @@ func (s *TokenRefreshService) processRefresh() {
 	oauthAccounts := 0 // 可刷新的OAuth账号数
 	needsRefresh := 0  // 需要刷新的账号数
 	refreshed, failed, skipped := 0, 0, 0
+	codexProbed := 0
+	now := time.Now()
 
 	for i := range accounts {
 		account := &accounts[i]
@@ -239,13 +252,19 @@ func (s *TokenRefreshService) processRefresh() {
 			// 每个账号只由一个refresher处理
 			break
 		}
+
+		if s.shouldProbeOpenAICodexUsageInBackground(account, now) {
+			s.codexUsageProbe.RefreshOpenAICodexSnapshot(ctx, account)
+			codexProbed++
+		}
 	}
 
 	// 无刷新活动时降级为 Debug，有实际刷新活动时保持 Info
-	if needsRefresh == 0 && failed == 0 {
+	if needsRefresh == 0 && failed == 0 && codexProbed == 0 {
 		slog.Debug("token_refresh.cycle_completed",
 			"total", totalAccounts, "oauth", oauthAccounts,
-			"needs_refresh", needsRefresh, "refreshed", refreshed, "skipped", skipped, "failed", failed)
+			"needs_refresh", needsRefresh, "refreshed", refreshed, "skipped", skipped, "failed", failed,
+			"openai_codex_probed", codexProbed)
 	} else {
 		slog.Info("token_refresh.cycle_completed",
 			"total", totalAccounts,
@@ -254,8 +273,31 @@ func (s *TokenRefreshService) processRefresh() {
 			"refreshed", refreshed,
 			"skipped", skipped,
 			"failed", failed,
+			"openai_codex_probed", codexProbed,
 		)
 	}
+}
+
+func (s *TokenRefreshService) shouldProbeOpenAICodexUsageInBackground(account *Account, now time.Time) bool {
+	if s == nil || s.cfg == nil || s.codexUsageProbe == nil {
+		return false
+	}
+	if !s.cfg.OpenAIBackgroundRefreshEnabled {
+		return false
+	}
+	if account == nil || !account.IsOpenAIOAuth() {
+		return false
+	}
+	if account.Priority == 99 {
+		return false
+	}
+	if !account.IsOpenAIResponsesWebSocketV2Enabled() {
+		return false
+	}
+	if account.LastUsedAt == nil {
+		return false
+	}
+	return !account.LastUsedAt.Before(now.Add(-openAIBackgroundCodexProbeRecentWindow))
 }
 
 // listActiveAccounts 获取所有active状态的账号

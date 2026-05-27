@@ -1163,15 +1163,15 @@ func TestSelectTopKOpenAICandidates(t *testing.T) {
 
 	top2 := selectTopKOpenAICandidates(candidates, 2)
 	require.Len(t, top2, 2)
-	require.Equal(t, int64(13), top2[0].account.ID)
-	require.Equal(t, int64(11), top2[1].account.ID)
+	require.Equal(t, int64(14), top2[0].account.ID)
+	require.Equal(t, int64(13), top2[1].account.ID)
 
 	topAll := selectTopKOpenAICandidates(candidates, 8)
 	require.Len(t, topAll, len(candidates))
-	require.Equal(t, int64(13), topAll[0].account.ID)
-	require.Equal(t, int64(11), topAll[1].account.ID)
+	require.Equal(t, int64(14), topAll[0].account.ID)
+	require.Equal(t, int64(13), topAll[1].account.ID)
 	require.Equal(t, int64(12), topAll[2].account.ID)
-	require.Equal(t, int64(14), topAll[3].account.ID)
+	require.Equal(t, int64(11), topAll[3].account.ID)
 }
 
 func TestSelectTopKOpenAICandidates_PrefersHigherCodex7dUsageWithinSamePriority(t *testing.T) {
@@ -1217,6 +1217,197 @@ func TestSelectTopKOpenAICandidates_PrefersHigherCodex7dUsageWithinSamePriority(
 	require.Equal(t, int64(22), ranked[0].account.ID)
 	require.Equal(t, int64(21), ranked[1].account.ID)
 	require.Equal(t, int64(23), ranked[2].account.ID)
+}
+
+func TestSelectTopKOpenAICandidates_Priority99ProtectedBelowNormalPool(t *testing.T) {
+	now := time.Now()
+	candidates := []openAIAccountCandidateScore{
+		{
+			account: &Account{
+				ID:       31,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Priority: 99,
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+					"codex_7d_used_percent":  99.0,
+				},
+			},
+			loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			score:    100.0,
+		},
+		{
+			account: &Account{
+				ID:       32,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Priority: 1,
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+					"codex_7d_used_percent":  10.0,
+				},
+			},
+			loadInfo: &AccountLoadInfo{LoadRate: 80, WaitingCount: 4},
+			score:    1.0,
+		},
+	}
+
+	ranked := selectTopKOpenAICandidates(candidates, 2)
+
+	require.Equal(t, int64(32), ranked[0].account.ID)
+	require.Equal(t, int64(31), ranked[1].account.ID)
+}
+
+func TestSelectTopKOpenAICandidates_SamePriorityAndCodex7dUsesFIFO(t *testing.T) {
+	now := time.Now()
+	candidates := []openAIAccountCandidateScore{
+		{
+			account: &Account{
+				ID:        41,
+				Platform:  PlatformOpenAI,
+				Type:      AccountTypeOAuth,
+				Priority:  1,
+				CreatedAt: now.Add(-24 * time.Hour),
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+					"codex_7d_used_percent":  80.0,
+				},
+			},
+			loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+			score:    7.0,
+		},
+		{
+			account: &Account{
+				ID:        42,
+				Platform:  PlatformOpenAI,
+				Type:      AccountTypeOAuth,
+				Priority:  1,
+				CreatedAt: now.Add(-72 * time.Hour),
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+					"codex_7d_used_percent":  80.0,
+				},
+			},
+			loadInfo: &AccountLoadInfo{LoadRate: 90, WaitingCount: 3},
+			score:    7.0,
+		},
+	}
+
+	ranked := selectTopKOpenAICandidates(candidates, 2)
+
+	require.Equal(t, int64(42), ranked[0].account.ID)
+	require.Equal(t, int64(41), ranked[1].account.ID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_SkipsCodexWindowExhaustedWithoutRuntimeRateLimit(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10110)
+	now := time.Now()
+	exhausted := Account{
+		ID:          38001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		Extra: map[string]any{
+			"codex_usage_updated_at": now.Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+			"codex_5h_used_percent":  100.0,
+			"codex_5h_reset_at":      now.Add(30 * time.Minute).UTC().Format(time.RFC3339),
+		},
+	}
+	backup := Account{
+		ID:          38002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    5,
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{exhausted, backup}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Nil(t, exhausted.RateLimitResetAt)
+	require.Equal(t, int64(38002), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_SkipsCodex5hAbove95Percent(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10111)
+	now := time.Now()
+	nearExhausted := Account{
+		ID:          38011,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		Extra: map[string]any{
+			"codex_usage_updated_at": now.Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+			"codex_5h_used_percent":  95.1,
+			"codex_5h_reset_at":      now.Add(30 * time.Minute).UTC().Format(time.RFC3339),
+		},
+	}
+	backup := Account{
+		ID:          38012,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    5,
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{nearExhausted, backup}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(38012), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 
 func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing.T) {
