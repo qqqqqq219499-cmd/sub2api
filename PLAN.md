@@ -107,3 +107,10 @@ bash /path/to/deploy-ghcr-image.sh \
 - [x] Python/PyYAML 解析 `.github/workflows/custom-ghcr-image.yml`
 - [x] `git diff --check`
 - [x] `go test -count=1 ./...`
+
+### GitHub 分支
+
+- [x] 已添加 fork 远端：`qfork=https://github.com/qqqqqq219499-cmd/sub2api.git`。
+- [x] 未覆盖 fork 的 `main`，因为该分支仍在 `0.1.130-windowstats` 自定义线。
+- [x] 已推送安全分支：`codex/v132-ghcr-deploy`。
+- [x] PR 地址：`https://github.com/qqqqqq219499-cmd/sub2api/pull/new/codex/v132-ghcr-deploy`。
