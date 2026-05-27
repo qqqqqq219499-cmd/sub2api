@@ -145,4 +145,13 @@ bash /path/to/deploy-ghcr-image.sh \
 
 - Codex 快照探测会请求 ChatGPT Codex backend；必须避免全量扫冷账号。
 - `last_used_at` 是延迟批量写入，刚被调用的账号可能要等一次 flush 后才进入后台轮询候选；请求路径返回头仍会即时更新快照。
-- 本轮只做本地修复与验证，不上线、不切镜像。
+- 2026-05-28 已上线镜像 `sub2api:v0.1.132-codex-quota-17c97ff1-20260528053111`；只重建 `sub2api` 服务，Postgres/Redis/Caddy 未重建。
+
+### 上线记录
+
+- [x] 代码补丁对当前线上源码目录 `/home/ubuntu/sub2api-builds/20260527232514-v132-codex-patches` 执行 `git apply --check` 通过；`PLAN.md` 因服务器构建目录账本不同未作为冲突依据。
+- [x] 本机验证通过：`go test -count=1 -tags unit ./internal/repository ./internal/service`、`go test -count=1 ./internal/service`、`go test -count=1 ./cmd/server`、`git diff --check`。
+- [x] 本地提交：`17c97ff1 fix: tune codex quota scheduling`。
+- [x] 上传源码快照并在服务器构建目录 `/home/ubuntu/sub2api-builds/20260528053111-v132-codex-quota-17c97ff1` 构建镜像 `sub2api:v0.1.132-codex-quota-17c97ff1-20260528053111`。
+- [x] 备份线上 compose：`/opt/sub2api/docker-compose.yml.bak.20260528055154`。
+- [x] 仅重建 `sub2api` 服务；上线后容器归属 `/opt/sub2api`，容器 `healthy`，`restart=0`，版本输出 `Sub2API 0.1.132 (commit: 17c97ff1, built: 2026-05-27T21:37:18Z)`，本机和公网 `/health` 均返回 `{"status":"ok"}`。
