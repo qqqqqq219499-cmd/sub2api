@@ -1,0 +1,73 @@
+# PLAN
+
+## 目标
+
+修复 OpenAI/Codex API 调用中单个会话长时间不产出首 token、导致监控 TTFT/P99 被一个卡死会话拖到十几分钟的问题。
+
+## 当前事实
+
+- 监控截图显示 `TTFT P99` 约 1220 秒，`请求时长 P99` 约 1249 秒。
+- HTTP 流式路径已有 `gateway.stream_data_interval_timeout`，默认 180 秒，只能处理“无上游数据”。
+- WebSocket relay 的 idle timeout 按任意上下游活动刷新；若上游持续发送非 token 状态帧，idle timeout 不会触发，但客户端仍无可见输出。
+
+## 计划
+
+- [x] 定位 API 服务仓库 `E:\xm\sub2api-src`。
+- [x] 检查现有未提交改动，避免回滚用户修改。
+- [x] 新增 WebSocket relay 首 token 超时回归测试。
+- [x] 新增 HTTP `/v1/responses` 流式首 token 超时回归测试。
+- [x] 实现首 token 超时与配置入口。
+- [x] 跑相关 Go 测试验证。
+
+## 风险
+
+- 当前仓库已有未提交改动：`backend/internal/config/config.go`、`backend/internal/service/account.go`、`backend/internal/service/token_refresh_service.go` 等。后续只追加必要变更，不回滚这些内容。
+- 首 token 超时过短会误杀真正排队但仍可能成功的请求；默认值需要保守。
+
+---
+
+## 追加任务：OpenAI/Codex 7d 额度低者优先
+
+### 目标
+
+在同一人工 `priority` 档位内，让 OpenAI/Codex OAuth 账号按 `codex_7d_used_percent` 越高越优先调度，从而优先用完 7d 剩余额度更少的账号。
+
+### 计划
+
+- [x] 确认现有调度路径：旧负载感知路径、OpenAI 专用负载路径、高级调度 Top-K。
+- [x] 先补排序/Top-K 回归测试，确认现有逻辑不会按 7d 剩余额度排序。
+- [x] 实现共享的 `OpenAICodex7dUsedPercentForScheduling`，过期快照或已重置窗口按 0 处理。
+- [x] 在同 `priority` 内，把 7d 已用百分比高的账号排到低负载/LRU 前面。
+- [x] 跑相关 Go 测试验证。
+
+### 风险
+
+- 该策略只在已有 `codex_usage_updated_at` 且快照未过期时生效；无快照账号按 0 处理。
+- `priority` 仍是最高人工控制项；低优先级兜底号不会因为 7d 用量高而抢过高优先级主用号。
+
+---
+
+## 上线记录
+
+- [x] 本机通过 `go test -tags unit ./internal/service`。
+- [x] 上传当前源码快照到服务器新构建目录 `/home/ubuntu/sub2api-builds/20260527222147-codex-7d-scheduler`。
+- [x] 服务器构建镜像 `sub2api:v0.1.131-codex-7d-20260527222539`。
+- [x] 备份线上 compose 为 `/opt/sub2api/docker-compose.yml.bak.20260527224330`。
+- [x] 仅重建并启动 `sub2api` 服务，Postgres/Redis/Caddy 未重建。
+- [x] 线上容器健康检查为 `healthy`，版本输出 `Sub2API 0.1.131 (commit: codex-7d-scheduler, built: 2026-05-27T14:31:22Z)`。
+
+---
+
+## 官方 0.1.132 同步检查
+
+- [x] 2026-05-27 拉取官方 `origin/main`，最新为 `v0.1.132` 后的 `89d96f4b`。
+- [x] 将本地补丁 rebase 到官方 `origin/main` 之后，保留为单个本地提交。
+- [x] 官方新增 `gateway.openai_response_header_timeout`，负责等待上游响应头；与本地 `stream_first_token_timeout` / `openai_ws.first_token_timeout_seconds` 的首个可见 token 超时不是重复补丁，已同时保留。
+- [x] 官方新增 OpenAI WS rate-limit failover，冲突处采用官方新版 relay 结构，只把本地 `FirstTokenTimeout` 接入官方 `RelayOptions`。
+- [x] 官方已有 `codex_7d_used_percent` 数据写入和展示，但未提供“同 priority 下 7d 已用百分比高者优先调度”；本地调度补丁仍保留。
+- [x] 官方未提供 `token_refresh.openai_background_refresh_enabled`，本地 OpenAI 后台刷新默认关闭补丁仍保留。
+- [x] 验证通过：`go test -count=1 -tags unit ./internal/service`、`go test -count=1 ./internal/config`、`go test -count=1 ./...`。
+- [x] 2026-05-27 已上线 `sub2api:v0.1.132-codex-patches-20260527232530`。
+- [x] 服务器构建目录：`/home/ubuntu/sub2api-builds/20260527232514-v132-codex-patches`。
+- [x] `/opt/sub2api/docker-compose.yml` 备份：`/opt/sub2api/docker-compose.yml.bak.20260527234156`。
+- [x] 仅重建 `sub2api` 服务；上线后容器 `healthy`，版本输出 `Sub2API 0.1.132 (commit: ef545d6e, built: 2026-05-27T15:30:57Z)`，本地 `/health` 返回 `{"status":"ok"}`，public settings 返回 `version=0.1.132`。

@@ -986,6 +986,19 @@ func (s *OpenAIGatewayService) openAIWSPassthroughIdleTimeout() time.Duration {
 	return openAIWSPassthroughIdleTimeoutDefault
 }
 
+func (s *OpenAIGatewayService) openAIWSFirstTokenTimeout() time.Duration {
+	if s != nil && s.cfg != nil {
+		seconds := s.cfg.Gateway.OpenAIWS.FirstTokenTimeoutSeconds
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		if seconds == 0 {
+			return 0
+		}
+	}
+	return 40 * time.Second
+}
+
 func (s *OpenAIGatewayService) openAIWSWriteTimeout() time.Duration {
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds > 0 {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds) * time.Second

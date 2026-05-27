@@ -735,6 +735,42 @@ func TestRelay_TraceEvents_IdleTimeout(t *testing.T) {
 	require.Contains(t, capturedStages, "relay_exit")
 }
 
+func TestRelay_FirstTokenTimeoutExitsDespiteUpstreamActivity(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.created","response":{"id":"resp_slow"}}`),
+		},
+	}, false)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-4o","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	stages := make([]string, 0, 8)
+	var stagesMu sync.Mutex
+	_, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
+		IdleTimeout:       time.Hour,
+		FirstTokenTimeout: 1500 * time.Millisecond,
+		OnTrace: func(event RelayTraceEvent) {
+			stagesMu.Lock()
+			stages = append(stages, event.Stage)
+			stagesMu.Unlock()
+		},
+	})
+
+	require.NotNil(t, relayExit)
+	require.Equal(t, "first_token_timeout", relayExit.Stage)
+	stagesMu.Lock()
+	capturedStages := append([]string(nil), stages...)
+	stagesMu.Unlock()
+	require.Contains(t, capturedStages, "first_token_timeout_triggered")
+	require.Contains(t, capturedStages, "relay_exit")
+}
+
 // errorOnWriteFrameConn 是一个写入总是失败的 FrameConn 实现，用于测试首包写入失败。
 type errorOnWriteFrameConn struct{}
 

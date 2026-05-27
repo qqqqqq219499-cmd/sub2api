@@ -57,6 +57,7 @@ type RelayExit struct {
 type RelayOptions struct {
 	WriteTimeout                    time.Duration
 	IdleTimeout                     time.Duration
+	FirstTokenTimeout               time.Duration
 	UpstreamDrainTimeout            time.Duration
 	FirstMessageType                coderws.MessageType
 	FirstMessageSent                bool
@@ -85,6 +86,7 @@ type relayState struct {
 	lastResponseID    string
 	terminalEventType string
 	firstTokenMs      *int
+	firstTokenSeen    atomic.Bool
 	turnTimingByID    map[string]*relayTurnTiming
 	activeTurn        *relayTurnTiming
 }
@@ -237,7 +239,7 @@ func Relay(
 		onTrace,
 		exitCh,
 	)
-	go runIdleWatchdog(relayCtx, nowFn, options.IdleTimeout, &lastActivity, onTrace, exitCh)
+	go runWatchdog(relayCtx, nowFn, options.IdleTimeout, options.FirstTokenTimeout, startAt, &lastActivity, &state.firstTokenSeen, onTrace, exitCh)
 
 	firstExit := <-exitCh
 	emitRelayTrace(onTrace, RelayTraceEvent{
@@ -520,18 +522,27 @@ func runUpstreamToClient(
 	}
 }
 
-func runIdleWatchdog(
+func runWatchdog(
 	ctx context.Context,
 	nowFn func() time.Time,
 	idleTimeout time.Duration,
+	firstTokenTimeout time.Duration,
+	startAt time.Time,
 	lastActivity *atomic.Int64,
+	firstTokenSeen *atomic.Bool,
 	onTrace func(event RelayTraceEvent),
 	exitCh chan<- relayExitSignal,
 ) {
-	if idleTimeout <= 0 {
+	if idleTimeout <= 0 && firstTokenTimeout <= 0 {
 		return
 	}
-	checkInterval := minDuration(idleTimeout/4, 5*time.Second)
+	checkInterval := 5 * time.Second
+	if idleTimeout > 0 {
+		checkInterval = minDuration(checkInterval, idleTimeout/4)
+	}
+	if firstTokenTimeout > 0 {
+		checkInterval = minDuration(checkInterval, firstTokenTimeout/4)
+	}
 	if checkInterval < time.Second {
 		checkInterval = time.Second
 	}
@@ -543,19 +554,45 @@ func runIdleWatchdog(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			last := time.Unix(0, lastActivity.Load())
-			if nowFn().Sub(last) < idleTimeout {
-				continue
+			now := nowFn()
+			if firstTokenTimeout > 0 && openAIWSRelayFirstTokenMissing(firstTokenSeen) && now.Sub(startAt) >= firstTokenTimeout {
+				emitRelayTrace(onTrace, RelayTraceEvent{
+					Stage:     "first_token_timeout_triggered",
+					Direction: "watchdog",
+					Error:     context.DeadlineExceeded.Error(),
+				})
+				exitCh <- relayExitSignal{stage: "first_token_timeout", err: context.DeadlineExceeded}
+				return
 			}
-			emitRelayTrace(onTrace, RelayTraceEvent{
-				Stage:     "idle_timeout_triggered",
-				Direction: "watchdog",
-				Error:     context.DeadlineExceeded.Error(),
-			})
-			exitCh <- relayExitSignal{stage: "idle_timeout", err: context.DeadlineExceeded}
-			return
+			if idleTimeout > 0 {
+				last := time.Unix(0, lastActivity.Load())
+				if now.Sub(last) >= idleTimeout {
+					emitRelayTrace(onTrace, RelayTraceEvent{
+						Stage:     "idle_timeout_triggered",
+						Direction: "watchdog",
+						Error:     context.DeadlineExceeded.Error(),
+					})
+					exitCh <- relayExitSignal{stage: "idle_timeout", err: context.DeadlineExceeded}
+					return
+				}
+			}
 		}
 	}
+}
+
+func runIdleWatchdog(
+	ctx context.Context,
+	nowFn func() time.Time,
+	idleTimeout time.Duration,
+	lastActivity *atomic.Int64,
+	onTrace func(event RelayTraceEvent),
+	exitCh chan<- relayExitSignal,
+) {
+	runWatchdog(ctx, nowFn, idleTimeout, 0, time.Time{}, lastActivity, nil, onTrace, exitCh)
+}
+
+func openAIWSRelayFirstTokenMissing(firstTokenSeen *atomic.Bool) bool {
+	return firstTokenSeen == nil || !firstTokenSeen.Load()
 }
 
 func emitRelayTrace(onTrace func(event RelayTraceEvent), event RelayTraceEvent) {
@@ -583,6 +620,8 @@ func relayDirectionFromStage(stage string) string {
 	case "read_upstream", "write_client", "drain_terminal":
 		return "upstream_to_client"
 	case "idle_timeout":
+		return "watchdog"
+	case "first_token_timeout":
 		return "watchdog"
 	default:
 		return ""
@@ -625,6 +664,7 @@ func observeUpstreamMessage(
 		ms := int(now.Sub(startAt).Milliseconds())
 		if ms >= 0 {
 			state.firstTokenMs = &ms
+			state.firstTokenSeen.Store(true)
 		}
 		if state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {
 			tms := int(now.Sub(state.activeTurn.startAt).Milliseconds())

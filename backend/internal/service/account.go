@@ -121,6 +121,9 @@ func (a *Account) IsSchedulable() bool {
 	if a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
 		return false
 	}
+	if a.IsOpenAICodexWindowExhausted(now) {
+		return false
+	}
 	if a.IsAPIKeyOrBedrock() && a.IsQuotaExceeded() {
 		return false
 	}
@@ -2032,6 +2035,54 @@ func (a *Account) IsQuotaExceeded() bool {
 		}
 	}
 	return false
+}
+
+// IsOpenAICodexWindowExhausted checks passive OpenAI/Codex usage snapshots.
+// The snapshot is only trusted briefly; stale UI-only data must not keep an
+// account out of scheduling after the upstream window has likely changed.
+func (a *Account) IsOpenAICodexWindowExhausted(now time.Time) bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	updatedAt := a.getExtraTime("codex_usage_updated_at")
+	if updatedAt.IsZero() || now.Sub(updatedAt) >= openAIProbeCacheTTL {
+		return false
+	}
+	return a.isOpenAICodexWindowExhausted("codex_5h", now, updatedAt) ||
+		a.isOpenAICodexWindowExhausted("codex_7d", now, updatedAt)
+}
+
+func (a *Account) isOpenAICodexWindowExhausted(prefix string, now time.Time, updatedAt time.Time) bool {
+	if parseExtraFloat64(a.Extra[prefix+"_used_percent"]) < 100 {
+		return false
+	}
+	resetAt := a.getExtraTime(prefix + "_reset_at")
+	if resetAt.IsZero() {
+		if resetAfterSeconds := parseExtraInt(a.Extra[prefix+"_reset_after_seconds"]); resetAfterSeconds > 0 {
+			resetAt = updatedAt.Add(time.Duration(resetAfterSeconds) * time.Second)
+		}
+	}
+	return !resetAt.IsZero() && now.Before(resetAt)
+}
+
+func (a *Account) OpenAICodex7dUsedPercentForScheduling(now time.Time) float64 {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return 0
+	}
+	updatedAt := a.getExtraTime("codex_usage_updated_at")
+	if updatedAt.IsZero() || now.Sub(updatedAt) >= openAIProbeCacheTTL {
+		return 0
+	}
+	resetAt := a.getExtraTime("codex_7d_reset_at")
+	if resetAt.IsZero() {
+		if resetAfterSeconds := parseExtraInt(a.Extra["codex_7d_reset_after_seconds"]); resetAfterSeconds > 0 {
+			resetAt = updatedAt.Add(time.Duration(resetAfterSeconds) * time.Second)
+		}
+	}
+	if !resetAt.IsZero() && !now.Before(resetAt) {
+		return 0
+	}
+	return clamp01(parseExtraFloat64(a.Extra["codex_7d_used_percent"]) / 100)
 }
 
 // GetWindowCostLimit 获取 5h 窗口费用阈值（美元）

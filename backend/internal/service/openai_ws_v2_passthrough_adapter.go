@@ -499,6 +499,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Options: openaiwsv2.RelayOptions{
 			WriteTimeout:                    s.openAIWSWriteTimeout(),
 			IdleTimeout:                     s.openAIWSPassthroughIdleTimeout(),
+			FirstTokenTimeout:               s.openAIWSFirstTokenTimeout(),
 			FirstMessageType:                coderws.MessageText,
 			FirstMessageSent:                upstreamFirstMessageSent,
 			StartClientAfterFirstDownstream: true,

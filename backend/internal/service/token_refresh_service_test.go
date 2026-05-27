@@ -115,6 +115,51 @@ func (r *tokenRefresherStub) CacheKey(account *Account) string {
 	return "test:stub:" + account.Platform
 }
 
+func TestTokenRefreshService_DefaultSkipsOpenAIBackgroundRefresh(t *testing.T) {
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(&tokenRefreshAccountRepo{}, nil, nil, nil, nil, nil, nil, cfg, nil)
+	openAIAccount := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+
+	for _, refresher := range service.refreshers {
+		require.False(t, refresher.CanRefresh(openAIAccount), "OpenAI OAuth should refresh on request path only, not in background")
+	}
+}
+
+func TestTokenRefreshService_CanOptIntoOpenAIBackgroundRefresh(t *testing.T) {
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			OpenAIBackgroundRefreshEnabled: true,
+			MaxRetries:                     1,
+			RetryBackoffSeconds:            0,
+		},
+	}
+	service := NewTokenRefreshService(&tokenRefreshAccountRepo{}, nil, nil, nil, nil, nil, nil, cfg, nil)
+	openAIAccount := &Account{
+		ID:       43,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+
+	found := false
+	for _, refresher := range service.refreshers {
+		if refresher.CanRefresh(openAIAccount) {
+			found = true
+			break
+		}
+	}
+
+	require.True(t, found, "OpenAI OAuth background refresh should be available when explicitly enabled")
+}
+
 func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
 	repo := &tokenRefreshAccountRepo{}
 	invalidator := &tokenCacheInvalidatorStub{}

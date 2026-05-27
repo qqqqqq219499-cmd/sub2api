@@ -384,11 +384,11 @@ const (
 // DefaultStreamTimeoutSettings 返回默认的流超时配置
 func DefaultStreamTimeoutSettings() *StreamTimeoutSettings {
 	return &StreamTimeoutSettings{
-		Enabled:                false,
+		Enabled:                true,
 		Action:                 StreamTimeoutActionTempUnsched,
-		TempUnschedMinutes:     5,
-		ThresholdCount:         3,
-		ThresholdWindowMinutes: 10,
+		TempUnschedMinutes:     15,
+		ThresholdCount:         2,
+		ThresholdWindowMinutes: 30,
 	}
 }
 

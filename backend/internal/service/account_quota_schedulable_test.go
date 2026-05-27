@@ -101,6 +101,51 @@ func TestAccountIsSchedulable_QuotaExceeded(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "openai oauth codex 5h window exhausted",
+			account: &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+					"codex_5h_used_percent":  100.0,
+					"codex_5h_reset_at":      now.Add(30 * time.Minute).UTC().Format(time.RFC3339),
+				},
+			},
+			want: false,
+		},
+		{
+			name: "openai oauth codex 7d window exhausted with reset-after",
+			account: &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Extra: map[string]any{
+					"codex_usage_updated_at":       now.Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+					"codex_7d_used_percent":        100.0,
+					"codex_7d_reset_after_seconds": 1800,
+				},
+			},
+			want: false,
+		},
+		{
+			name: "openai oauth stale codex window snapshot stays schedulable",
+			account: &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.Add(-30 * time.Minute).UTC().Format(time.RFC3339),
+					"codex_5h_used_percent":  100.0,
+					"codex_5h_reset_at":      now.Add(30 * time.Minute).UTC().Format(time.RFC3339),
+				},
+			},
+			want: true,
+		},
+		{
 			name: "bedrock quota exceeded",
 			account: &Account{
 				Status:      StatusActive,

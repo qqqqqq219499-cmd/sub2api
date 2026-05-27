@@ -442,6 +442,10 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 	if left.account.Priority != right.account.Priority {
 		return left.account.Priority < right.account.Priority
 	}
+	now := time.Now()
+	if left7d, right7d := left.account.OpenAICodex7dUsedPercentForScheduling(now), right.account.OpenAICodex7dUsedPercentForScheduling(now); left7d != right7d {
+		return left7d > right7d
+	}
 	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
 		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
 	}
@@ -762,6 +766,10 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 		a, b := ordered[i], ordered[j]
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
+		}
+		now := time.Now()
+		if a7d, b7d := a.account.OpenAICodex7dUsedPercentForScheduling(now), b.account.OpenAICodex7dUsedPercentForScheduling(now); a7d != b7d {
+			return a7d > b7d
 		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate

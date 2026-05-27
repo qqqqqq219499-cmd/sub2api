@@ -1174,6 +1174,51 @@ func TestSelectTopKOpenAICandidates(t *testing.T) {
 	require.Equal(t, int64(14), topAll[3].account.ID)
 }
 
+func TestSelectTopKOpenAICandidates_PrefersHigherCodex7dUsageWithinSamePriority(t *testing.T) {
+	now := time.Now()
+	candidates := []openAIAccountCandidateScore{
+		{
+			account: &Account{
+				ID:       21,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Priority: 1,
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+					"codex_7d_used_percent":  45.0,
+				},
+			},
+			loadInfo: &AccountLoadInfo{LoadRate: 20, WaitingCount: 0},
+			score:    7.0,
+		},
+		{
+			account: &Account{
+				ID:       22,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Priority: 1,
+				Extra: map[string]any{
+					"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+					"codex_7d_used_percent":  91.0,
+				},
+			},
+			loadInfo: &AccountLoadInfo{LoadRate: 80, WaitingCount: 0},
+			score:    7.0,
+		},
+		{
+			account:  &Account{ID: 23, Priority: 1},
+			loadInfo: &AccountLoadInfo{LoadRate: 20, WaitingCount: 0},
+			score:    7.0,
+		},
+	}
+
+	ranked := selectTopKOpenAICandidates(candidates, 3)
+
+	require.Equal(t, int64(22), ranked[0].account.ID)
+	require.Equal(t, int64(21), ranked[1].account.ID)
+	require.Equal(t, int64(23), ranked[2].account.ID)
+}
+
 func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing.T) {
 	candidates := []openAIAccountCandidateScore{
 		{

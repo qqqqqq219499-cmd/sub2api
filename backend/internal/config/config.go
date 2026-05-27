@@ -521,6 +521,8 @@ func normalizeWeChatConnectConfig(cfg *WeChatConnectConfig) {
 type TokenRefreshConfig struct {
 	// 是否启用自动刷新
 	Enabled bool `mapstructure:"enabled"`
+	// 是否允许后台定时刷新 OpenAI OAuth token。默认关闭，OpenAI 走请求路径按需刷新。
+	OpenAIBackgroundRefreshEnabled bool `mapstructure:"openai_background_refresh_enabled"`
 	// 检查间隔（分钟）
 	CheckIntervalMinutes int `mapstructure:"check_interval_minutes"`
 	// 提前刷新时间（小时），在token过期前多久开始刷新
@@ -749,6 +751,8 @@ type GatewayConfig struct {
 
 	// StreamDataIntervalTimeout: 流数据间隔超时（秒），0表示禁用
 	StreamDataIntervalTimeout int `mapstructure:"stream_data_interval_timeout"`
+	// StreamFirstTokenTimeout: 流式首个可见输出超时（秒），0表示禁用
+	StreamFirstTokenTimeout int `mapstructure:"stream_first_token_timeout"`
 	// StreamKeepaliveInterval: 流式 keepalive 间隔（秒），0表示禁用
 	StreamKeepaliveInterval int `mapstructure:"stream_keepalive_interval"`
 	// ImageStreamDataIntervalTimeout: 图片流数据间隔超时（秒），0表示禁用
@@ -896,12 +900,13 @@ type GatewayOpenAIWSConfig struct {
 	// OAuthMaxConnsFactor: OAuth 账号连接池系数（effective=ceil(concurrency*factor)）
 	OAuthMaxConnsFactor float64 `mapstructure:"oauth_max_conns_factor"`
 	// APIKeyMaxConnsFactor: API Key 账号连接池系数（effective=ceil(concurrency*factor)）
-	APIKeyMaxConnsFactor  float64 `mapstructure:"apikey_max_conns_factor"`
-	DialTimeoutSeconds    int     `mapstructure:"dial_timeout_seconds"`
-	ReadTimeoutSeconds    int     `mapstructure:"read_timeout_seconds"`
-	WriteTimeoutSeconds   int     `mapstructure:"write_timeout_seconds"`
-	PoolTargetUtilization float64 `mapstructure:"pool_target_utilization"`
-	QueueLimitPerConn     int     `mapstructure:"queue_limit_per_conn"`
+	APIKeyMaxConnsFactor     float64 `mapstructure:"apikey_max_conns_factor"`
+	DialTimeoutSeconds       int     `mapstructure:"dial_timeout_seconds"`
+	ReadTimeoutSeconds       int     `mapstructure:"read_timeout_seconds"`
+	WriteTimeoutSeconds      int     `mapstructure:"write_timeout_seconds"`
+	FirstTokenTimeoutSeconds int     `mapstructure:"first_token_timeout_seconds"`
+	PoolTargetUtilization    float64 `mapstructure:"pool_target_utilization"`
+	QueueLimitPerConn        int     `mapstructure:"queue_limit_per_conn"`
 	// EventFlushBatchSize: WS 流式写出批量 flush 阈值（事件条数）
 	EventFlushBatchSize int `mapstructure:"event_flush_batch_size"`
 	// EventFlushIntervalMS: WS 流式写出最大等待时间（毫秒）；0 表示仅按 batch 触发
@@ -1803,6 +1808,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.dial_timeout_seconds", 10)
 	viper.SetDefault("gateway.openai_ws.read_timeout_seconds", 900)
 	viper.SetDefault("gateway.openai_ws.write_timeout_seconds", 120)
+	viper.SetDefault("gateway.openai_ws.first_token_timeout_seconds", 40)
 	viper.SetDefault("gateway.openai_ws.pool_target_utilization", 0.7)
 	viper.SetDefault("gateway.openai_ws.queue_limit_per_conn", 64)
 	viper.SetDefault("gateway.openai_ws.event_flush_batch_size", 1)
@@ -1853,6 +1859,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
+	viper.SetDefault("gateway.stream_first_token_timeout", 40)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
@@ -1906,6 +1913,7 @@ func setDefaults() {
 
 	// TokenRefresh
 	viper.SetDefault("token_refresh.enabled", true)
+	viper.SetDefault("token_refresh.openai_background_refresh_enabled", false)
 	viper.SetDefault("token_refresh.check_interval_minutes", 5)        // 每5分钟检查一次
 	viper.SetDefault("token_refresh.refresh_before_expiry_hours", 0.5) // 提前30分钟刷新（适配Google 1小时token）
 	viper.SetDefault("token_refresh.max_retries", 3)                   // 最多重试3次
@@ -2455,6 +2463,13 @@ func (c *Config) Validate() error {
 	if c.Gateway.StreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")
 	}
+	if c.Gateway.StreamFirstTokenTimeout < 0 {
+		return fmt.Errorf("gateway.stream_first_token_timeout must be non-negative")
+	}
+	if c.Gateway.StreamFirstTokenTimeout != 0 &&
+		(c.Gateway.StreamFirstTokenTimeout < 30 || c.Gateway.StreamFirstTokenTimeout > 40) {
+		return fmt.Errorf("gateway.stream_first_token_timeout must be 0 or between 30-40 seconds")
+	}
 	if c.Gateway.StreamDataIntervalTimeout != 0 &&
 		(c.Gateway.StreamDataIntervalTimeout < 30 || c.Gateway.StreamDataIntervalTimeout > 300) {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be 0 or between 30-300 seconds")
@@ -2513,6 +2528,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.WriteTimeoutSeconds <= 0 {
 		return fmt.Errorf("gateway.openai_ws.write_timeout_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.FirstTokenTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.first_token_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.FirstTokenTimeoutSeconds != 0 &&
+		(c.Gateway.OpenAIWS.FirstTokenTimeoutSeconds < 30 || c.Gateway.OpenAIWS.FirstTokenTimeoutSeconds > 40) {
+		return fmt.Errorf("gateway.openai_ws.first_token_timeout_seconds must be 0 or between 30-40 seconds")
 	}
 	if c.Gateway.OpenAIWS.PoolTargetUtilization <= 0 || c.Gateway.OpenAIWS.PoolTargetUtilization > 1 {
 		return fmt.Errorf("gateway.openai_ws.pool_target_utilization must be within (0,1]")

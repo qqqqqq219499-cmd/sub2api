@@ -2030,9 +2030,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
-			// 2. 取负载率最低的集合
+			// 2. 同优先级时，优先消耗 7d 剩余额度更少的 OpenAI/Codex 账号
+			candidates = filterByMaxOpenAICodex7dUsage(candidates, time.Now())
+			// 3. 再取负载率最低的集合
 			candidates = filterByMinLoadRate(candidates)
-			// 3. LRU 选择最久未用的账号
+			// 4. LRU 选择最久未用的账号
 			selected := selectByLRU(candidates, preferOAuth)
 			if selected == nil {
 				break
@@ -2785,6 +2787,28 @@ func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 	return result
 }
 
+func filterByMaxOpenAICodex7dUsage(accounts []accountWithLoad, now time.Time) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	maxUsedPercent := accounts[0].account.OpenAICodex7dUsedPercentForScheduling(now)
+	for _, acc := range accounts[1:] {
+		if usedPercent := acc.account.OpenAICodex7dUsedPercentForScheduling(now); usedPercent > maxUsedPercent {
+			maxUsedPercent = usedPercent
+		}
+	}
+	if maxUsedPercent <= 0 {
+		return accounts
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.account.OpenAICodex7dUsedPercentForScheduling(now) == maxUsedPercent {
+			result = append(result, acc)
+		}
+	}
+	return result
+}
+
 // selectByLRU 从集合中选择最久未用的账号
 // 如果有多个账号具有相同的最小 LastUsedAt，则随机选择一个
 func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
@@ -2846,10 +2870,14 @@ func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad 
 }
 
 func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
+	now := time.Now()
 	sort.SliceStable(accounts, func(i, j int) bool {
 		a, b := accounts[i], accounts[j]
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
+		}
+		if a7d, b7d := a.OpenAICodex7dUsedPercentForScheduling(now), b.OpenAICodex7dUsedPercentForScheduling(now); a7d != b7d {
+			return a7d > b7d
 		}
 		switch {
 		case a.LastUsedAt == nil && b.LastUsedAt != nil:
@@ -2868,7 +2896,7 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
 }
 
-// shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。
+// shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, Codex 7d 用量, LastUsedAt) 分组后组内随机打乱。
 // 防止并发请求读取同一快照时，确定性排序导致所有请求命中相同账号。
 func shuffleWithinSortGroups(accounts []accountWithLoad) {
 	if len(accounts) <= 1 {
@@ -2895,6 +2923,10 @@ func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
 		return false
 	}
 	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+		return false
+	}
+	now := time.Now()
+	if a.account.OpenAICodex7dUsedPercentForScheduling(now) != b.account.OpenAICodex7dUsedPercentForScheduling(now) {
 		return false
 	}
 	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)
@@ -2945,9 +2977,13 @@ func shuffleWithinPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 	}
 }
 
-// sameAccountGroup 判断两个 Account 是否属于同一排序组（Priority + LastUsedAt）
+// sameAccountGroup 判断两个 Account 是否属于同一排序组（Priority + Codex 7d 用量 + LastUsedAt）
 func sameAccountGroup(a, b *Account) bool {
 	if a.Priority != b.Priority {
+		return false
+	}
+	now := time.Now()
+	if a.OpenAICodex7dUsedPercentForScheduling(now) != b.OpenAICodex7dUsedPercentForScheduling(now) {
 		return false
 	}
 	return sameLastUsedAt(a.LastUsedAt, b.LastUsedAt)

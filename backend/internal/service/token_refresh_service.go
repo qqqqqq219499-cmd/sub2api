@@ -60,16 +60,14 @@ func NewTokenRefreshService(
 		stopCh:           make(chan struct{}),
 	}
 
-	openAIRefresher := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
-
 	claudeRefresher := NewClaudeTokenRefresher(oauthService)
 	geminiRefresher := NewGeminiTokenRefresher(geminiOAuthService)
 	agRefresher := NewAntigravityTokenRefresher(antigravityOAuthService)
 
-	// 注册平台特定的刷新器（TokenRefresher 接口）
+	// 注册平台特定的刷新器（TokenRefresher 接口）。
+	// OpenAI 默认只在请求路径按需刷新，避免后台批量刷新多个账号暴露统一出口 IP。
 	s.refreshers = []TokenRefresher{
 		claudeRefresher,
-		openAIRefresher,
 		geminiRefresher,
 		agRefresher,
 	}
@@ -77,9 +75,14 @@ func NewTokenRefreshService(
 	// 注册对应的 OAuthRefreshExecutor（带 CacheKey 方法）
 	s.executors = []OAuthRefreshExecutor{
 		claudeRefresher,
-		openAIRefresher,
 		geminiRefresher,
 		agRefresher,
+	}
+
+	if cfg.TokenRefresh.OpenAIBackgroundRefreshEnabled {
+		openAIRefresher := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
+		s.refreshers = append(s.refreshers, openAIRefresher)
+		s.executors = append(s.executors, openAIRefresher)
 	}
 
 	return s

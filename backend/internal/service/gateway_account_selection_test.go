@@ -59,6 +59,52 @@ func TestSortAccountsByPriorityAndLastUsed_SamePriorityByLastUsed(t *testing.T) 
 	require.Equal(t, int64(1), accounts[2].ID)
 }
 
+func TestSortAccountsByPriorityAndLastUsed_SamePriorityPrefersHigherCodex7dUsage(t *testing.T) {
+	now := time.Now()
+	lastUsed := testTimePtr(now.Add(-1 * time.Hour))
+	accounts := []*Account{
+		{
+			ID:         1,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   1,
+			LastUsedAt: lastUsed,
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  35.0,
+			},
+		},
+		{
+			ID:         2,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   1,
+			LastUsedAt: lastUsed,
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  82.0,
+			},
+		},
+		{
+			ID:         3,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			Priority:   1,
+			LastUsedAt: lastUsed,
+			Extra: map[string]any{
+				"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+				"codex_7d_used_percent":  58.0,
+			},
+		},
+	}
+
+	sortAccountsByPriorityAndLastUsed(accounts, false)
+
+	require.Equal(t, int64(2), accounts[0].ID)
+	require.Equal(t, int64(3), accounts[1].ID)
+	require.Equal(t, int64(1), accounts[2].ID)
+}
+
 func TestSortAccountsByPriorityAndLastUsed_PreferOAuth(t *testing.T) {
 	accounts := []*Account{
 		{ID: 1, Priority: 1, LastUsedAt: nil, Type: AccountTypeAPIKey},
@@ -146,6 +192,36 @@ func TestFilterByMinLoadRate_SelectsMinLoadRate(t *testing.T) {
 		makeAccWithLoad(4, 1, 20, nil, AccountTypeAPIKey),
 	}
 	result := filterByMinLoadRate(accounts)
+	require.Len(t, result, 2)
+	require.Equal(t, int64(2), result[0].account.ID)
+	require.Equal(t, int64(3), result[1].account.ID)
+}
+
+func TestFilterByMaxOpenAICodex7dUsage_SelectsHighestUsage(t *testing.T) {
+	now := time.Now()
+	accounts := []accountWithLoad{
+		makeAccWithLoad(1, 1, 10, nil, AccountTypeOAuth),
+		makeAccWithLoad(2, 1, 10, nil, AccountTypeOAuth),
+		makeAccWithLoad(3, 1, 10, nil, AccountTypeOAuth),
+	}
+	accounts[0].account.Platform = PlatformOpenAI
+	accounts[0].account.Extra = map[string]any{
+		"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+		"codex_7d_used_percent":  20.0,
+	}
+	accounts[1].account.Platform = PlatformOpenAI
+	accounts[1].account.Extra = map[string]any{
+		"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+		"codex_7d_used_percent":  80.0,
+	}
+	accounts[2].account.Platform = PlatformOpenAI
+	accounts[2].account.Extra = map[string]any{
+		"codex_usage_updated_at": now.UTC().Format(time.RFC3339),
+		"codex_7d_used_percent":  80.0,
+	}
+
+	result := filterByMaxOpenAICodex7dUsage(accounts, now)
+
 	require.Len(t, result, 2)
 	require.Equal(t, int64(2), result[0].account.ID)
 	require.Equal(t, int64(3), result[1].account.ID)

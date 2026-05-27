@@ -284,6 +284,8 @@ gateway:
     dial_timeout_seconds: 10
     read_timeout_seconds: 900
     write_timeout_seconds: 120
+    # 首 token 超时（秒）；上游有状态帧但迟迟无可见输出时主动结束，0 表示禁用
+    first_token_timeout_seconds: 40
     pool_target_utilization: 0.7
     queue_limit_per_conn: 64
     # 流式写出批量 flush 参数
@@ -356,6 +358,9 @@ gateway:
   # Stream data interval timeout (seconds), 0=disable
   # 流数据间隔超时（秒），0=禁用
   stream_data_interval_timeout: 180
+  # Stream first visible output timeout (seconds), 0=disable
+  # 流式首个可见输出超时（秒），0=禁用
+  stream_first_token_timeout: 40
   # Stream keepalive interval (seconds), 0=disable
   # 流式 keepalive 间隔（秒），0=禁用
   stream_keepalive_interval: 10
