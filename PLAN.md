@@ -12,7 +12,7 @@
 
 ## 计划
 
-- [x] 定位 API 服务仓库 `E:\xm\sub2api-src`。
+- [x] 定位 API 服务仓库 `E:\xm\sub2api\sub2api-src`。
 - [x] 检查现有未提交改动，避免回滚用户修改。
 - [x] 新增 WebSocket relay 首 token 超时回归测试。
 - [x] 新增 HTTP `/v1/responses` 流式首 token 超时回归测试。
