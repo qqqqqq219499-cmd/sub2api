@@ -35,6 +35,68 @@ type snapshotUpdateAccountRepo struct {
 	updateExtraCalls chan map[string]any
 }
 
+type streamTimeoutAccountRepoStub struct {
+	stubOpenAIAccountRepo
+	tempUnschedCalls int
+}
+
+func (r *streamTimeoutAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedCalls++
+	return nil
+}
+
+type streamTimeoutCounterStub struct {
+	count int64
+}
+
+func (c *streamTimeoutCounterStub) IncrementTimeoutCount(ctx context.Context, accountID int64, windowMinutes int) (int64, error) {
+	c.count++
+	return c.count, nil
+}
+
+func (c *streamTimeoutCounterStub) GetTimeoutCount(ctx context.Context, accountID int64) (int64, error) {
+	return c.count, nil
+}
+
+func (c *streamTimeoutCounterStub) ResetTimeoutCount(ctx context.Context, accountID int64) error {
+	c.count = 0
+	return nil
+}
+
+func (c *streamTimeoutCounterStub) GetTimeoutCountTTL(ctx context.Context, accountID int64) (time.Duration, error) {
+	return time.Minute, nil
+}
+
+type streamTimeoutSettingRepoStub struct{}
+
+func (r streamTimeoutSettingRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
+	return nil, ErrSettingNotFound
+}
+
+func (r streamTimeoutSettingRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	return "", ErrSettingNotFound
+}
+
+func (r streamTimeoutSettingRepoStub) Set(ctx context.Context, key, value string) error {
+	return nil
+}
+
+func (r streamTimeoutSettingRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func (r streamTimeoutSettingRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
+	return nil
+}
+
+func (r streamTimeoutSettingRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func (r streamTimeoutSettingRepoStub) Delete(ctx context.Context, key string) error {
+	return nil
+}
+
 func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if r.updateExtraCalls != nil {
 		copied := make(map[string]any, len(updates))
@@ -1162,6 +1224,96 @@ func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) 
 	require.Contains(t, string(failoverErr.ResponseBody), "An error occurred while processing your request")
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
+}
+
+func TestOpenAIStreamingResponseFailedBeforeOutputCountsStreamTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	accountRepo := &streamTimeoutAccountRepoStub{}
+	rateLimitService := NewRateLimitService(accountRepo, nil, cfg, nil, nil)
+	rateLimitService.SetSettingService(NewSettingService(streamTimeoutSettingRepoStub{}, cfg))
+	rateLimitService.SetTimeoutCounterCache(&streamTimeoutCounterStub{count: 1})
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		rateLimitService: rateLimitService,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			"",
+			"event: response.in_progress",
+			`data: {"type":"response.in_progress","response":{"id":"resp_1"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","error":{"message":"Upstream request failed","type":"upstream_error"}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-upstream-failed"}},
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "gpt-5.5", "gpt-5.5")
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, 1, accountRepo.tempUnschedCalls)
+}
+
+func TestOpenAIStreamingResponseFailedBeforeOutputCapacityDoesNotCountStreamTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	accountRepo := &streamTimeoutAccountRepoStub{}
+	rateLimitService := NewRateLimitService(accountRepo, nil, cfg, nil, nil)
+	rateLimitService.SetSettingService(NewSettingService(streamTimeoutSettingRepoStub{}, cfg))
+	rateLimitService.SetTimeoutCounterCache(&streamTimeoutCounterStub{count: 1})
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		rateLimitService: rateLimitService,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			"",
+			"event: response.in_progress",
+			`data: {"type":"response.in_progress","response":{"id":"resp_1"}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","error":{"message":"Selected model is at capacity. Please try a different model.","type":"invalid_request_error"}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-capacity-failed"}},
+	}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "gpt-5.5", "gpt-5.5")
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, 0, accountRepo.tempUnschedCalls)
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t *testing.T) {

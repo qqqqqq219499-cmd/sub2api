@@ -3543,6 +3543,35 @@ func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool 
 	return true
 }
 
+func openAIStreamFailedEventShouldCountTimeout(payload []byte, message string) bool {
+	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.code").String()))
+	if code == "" {
+		code = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.code").String()))
+	}
+	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.type").String()))
+	if errType == "" {
+		errType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.type").String()))
+	}
+	combined := strings.ToLower(strings.TrimSpace(message + " " + code + " " + errType))
+	if strings.Contains(combined, "upstream request failed") ||
+		strings.Contains(combined, "timeout") ||
+		strings.Contains(combined, "upstream_error") ||
+		strings.Contains(combined, "api_error") {
+		return true
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) handleOpenAIPreOutputStreamFailure(ctx context.Context, account *Account, model string, payload []byte, message string) {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return
+	}
+	if !openAIStreamFailedEventShouldCountTimeout(payload, message) {
+		return
+	}
+	s.rateLimitService.HandleStreamTimeout(ctx, account, model)
+}
+
 func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 	c *gin.Context,
 	account *Account,
@@ -3679,6 +3708,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
+					s.handleOpenAIPreOutputStreamFailure(ctx, account, originalModel, dataBytes, failedMessage)
 					return resultWithUsage(),
 						s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage)
 				}
@@ -4568,6 +4598,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
+					s.handleOpenAIPreOutputStreamFailure(ctx, account, originalModel, dataBytes, failedMessage)
 					sawFailedEvent = true
 					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, dataBytes, failedMessage)
 					return
